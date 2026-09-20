@@ -11,7 +11,9 @@ from forage.agent.survival import SurvivalEngine
 from forage.economy.ledger import Ledger
 from forage.economy.revenue import RevenueEngine
 from forage.economy.wallet import Wallet
-from forage.evolution.engine import EvolutionEngine
+from datetime import datetime, timedelta, timezone
+
+from forage.evolution.genome_store import GenomeStore
 from forage.infra.config import load_config
 from forage.infra.database import init_db
 from forage.safety.audit import AuditLog
@@ -99,30 +101,25 @@ class ForageEconomicAdapter:
 
     def propose_evolution(self) -> dict[str, Any]:
         """Inspect whether Forage's evolution cycle is due; does not mutate state."""
-        engine = EvolutionEngine.from_agent(_AdapterAgentView(self))
+        store = GenomeStore(self.config)
+        last = store.last_evolution_time()
+        if not self.config.evolution.enabled:
+            due = False
+        elif last is None:
+            due = True
+        else:
+            last_dt = datetime.fromisoformat(last).replace(tzinfo=timezone.utc)
+            intervals = {"hourly": timedelta(hours=1), "daily": timedelta(days=1), "weekly": timedelta(weeks=1)}
+            interval = intervals.get(self.config.evolution.cycle, timedelta(days=1))
+            due = datetime.now(timezone.utc) - last_dt >= interval
         return {
             "enabled": self.config.evolution.enabled,
-            "due": engine.should_evolve(),
+            "due": due,
             "strategy": self.config.evolution.strategy,
+            "generation": store.get_generation(),
+            "last_evolution": last,
         }
 
     def record_audit_event(self, action_type: str, message: str, **details: Any) -> None:
         self.audit.log(action_type, message, details=details or None)
 
-
-class _AdapterAgentView:
-    """Minimal internal view required by EvolutionEngine.from_agent."""
-
-    def __init__(self, adapter: ForageEconomicAdapter):
-        self.config = adapter.config
-        self.ledger = adapter.ledger
-        self.memory = _NoMemory()
-        self.llm = None
-        self.survival = adapter.survival
-        self.audit = adapter.audit
-
-
-class _NoMemory:
-    """Placeholder: propose_evolution only calls should_evolve()."""
-
-    pass
